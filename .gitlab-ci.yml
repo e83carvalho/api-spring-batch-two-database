@@ -1,0 +1,106 @@
+include:
+  - project: 'raiadrogasil/rd/devops-rd/codequality'
+    ref: 'main'
+    file: 'mscorp/mscorp.univers.gitlab-ci.yml'
+  - project: 'raiadrogasil/rd/devops-rd/codequality'
+    ref: 'main'
+    file: '/mscorp/appsecflow-aws.gitlab-ci.yml'
+
+variables:
+  DOCKER_DRIVER: overlay2
+  SPRING_PROFILES_ACTIVE: docker
+  TAG_ENV_DEV: dev
+  TAG_ENV: qa
+  TAG_ENV_PROD: prod
+  
+stages:
+  - test
+  - build
+  - package
+
+maven-build-dev:
+  image: harbor.rd.com.br/devops/rd-maven:3-openjdk-11
+  stage: build
+  before_script:
+  - export MAVEN_OPTS="-Xmx1024m -XX:MaxPermSize=1536m"
+  script:
+    - mvn package
+  artifacts:
+    paths:
+      - target/*.jar
+  tags:
+   - docker
+  only:
+    refs:
+      - develop
+
+package-dev:
+  image: harbor.rd.com.br/devops/rd-dind-aws:1.0.0
+  stage: package
+  variables:
+    AWS_ACCESS_KEY_ID: $AWS_ACCESS_KEY_ID_PROD
+    AWS_SECRET_ACCESS_KEY: $AWS_SECRET_ACCESS_KEY_PROD
+    AWS_DEFAULT_REGION: $AWS_DEFAULT_REGION_PROD
+  before_script:
+   - export SPR_APP_NAME=$(grep spring.application.name src/main/resources/application.properties | cut -f2 -d=)
+   - export CI_PROJECT_PATH=$(echo $CI_PROJECT_PATH | cut -d '/' -f4-)
+   - export VERSION=$(grep '<version>' pom.xml | awk 'FNR==2{print $0}' | grep -Eo "([0-9]{1,3}[\.]){2}[0-9]{1,3}")
+   - git clone https://$CI_DEPLOY_USER:$CI_DEPLOY_TOKEN@gitlab.com/raiadrogasil/rd/devops-rd/config-pipeline-aws.git config-pipeline
+  script:
+   - mv config-pipeline/$SPR_APP_NAME/Dockerfile .
+   - sed -it "s|VERSION|$VERSION|g" Dockerfile
+   - sed -it "s|CI_PROJECT_NAME|$CI_PROJECT_NAME|g" Dockerfile
+   - docker build -t $REGISTRY_URL/$CI_PROJECT_PATH:$CI_COMMIT_SHORT_SHA -t $REGISTRY_URL/$CI_PROJECT_PATH:latest .
+   - sh config-pipeline/create_ecr_repository.sh $CI_PROJECT_PATH
+   - docker push $REGISTRY_URL/$CI_PROJECT_PATH:$CI_COMMIT_SHORT_SHA
+   - docker push $REGISTRY_URL/$CI_PROJECT_PATH:latest
+  tags:
+   - docker-saas
+  only:
+    refs:
+      - develop
+
+
+##############################################################################################################################################################
+
+maven-build:
+  image: harbor.rd.com.br/devops/rd-maven:3-openjdk-11
+  stage: build
+  before_script:
+  - export MAVEN_OPTS="-Xmx1024m -XX:MaxPermSize=1536m"
+  script:
+    - mvn package
+  artifacts:
+    paths:
+      - target/*.jar
+  tags:
+   - docker
+  only:
+    refs:
+      - master
+
+package:
+  image: harbor.rd.com.br/devops/rd-dind-aws:1.0.0
+  stage: package
+  variables:
+    AWS_ACCESS_KEY_ID: $AWS_ACCESS_KEY_ID_PROD
+    AWS_SECRET_ACCESS_KEY: $AWS_SECRET_ACCESS_KEY_PROD
+    AWS_DEFAULT_REGION: $AWS_DEFAULT_REGION_PROD
+  before_script:
+   - export SPR_APP_NAME=$(grep spring.application.name src/main/resources/application.properties | cut -f2 -d= | tr -d '\n')
+   - export CI_PROJECT_PATH=$(echo $CI_PROJECT_PATH | cut -d '/' -f4-)
+   - export VERSION=$(grep '<version>' pom.xml | awk 'FNR==2{print $0}' | grep -Eo "([0-9]{1,3}[\.]){2}[0-9]{1,3}")
+   - git clone https://$CI_DEPLOY_USER:$CI_DEPLOY_TOKEN@gitlab.com/raiadrogasil/rd/devops-rd/config-pipeline-aws.git config-pipeline
+  script:
+   - mv config-pipeline/$SPR_APP_NAME/Dockerfile .
+   - sed -it "s|VERSION|$VERSION|g" Dockerfile
+   - sed -it "s|CI_PROJECT_NAME|$CI_PROJECT_NAME|g" Dockerfile
+   - docker build -t $REGISTRY_URL/$CI_PROJECT_PATH:$CI_COMMIT_SHORT_SHA -t $REGISTRY_URL/$CI_PROJECT_PATH:prod .
+   - sh config-pipeline/create_ecr_repository.sh $CI_PROJECT_PATH
+   - docker push $REGISTRY_URL/$CI_PROJECT_PATH:$CI_COMMIT_SHORT_SHA
+   - docker push $REGISTRY_URL/$CI_PROJECT_PATH:prod
+  tags:
+   - docker-saas
+  only:
+    refs:
+      - master
